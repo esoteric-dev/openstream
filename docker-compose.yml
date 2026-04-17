@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: multistream
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: multistream
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  srs:
+    image: registry.cn-hangzhou.aliyuncs.com/ossrs/srs:5
+    command: ./objs/srs -c conf/rtc.conf
+    ports:
+      - "1935:1935"    # RTMP
+      - "1985:1985"    # HTTP API
+      - "8080:8080"    # HTTP
+      - "8000:8000/udp" # WebRTC
+    volumes:
+      - ./docker/srs.conf:/usr/local/srs/conf/rtc.conf
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://multistream:password@postgres:5432/multistream
+      REDIS_URL: redis://redis:6379
+      RTMP_SERVER_URL: rtmp://srs:1935/live
+      SRS_API_URL: http://srs:1985
+    ports:
+      - "3001:3001"
+    depends_on:
+      - postgres
+      - redis
+      - srs
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      API_URL: http://api:3001
+      RTMP_SERVER_URL: rtmp://localhost:1935/live
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:

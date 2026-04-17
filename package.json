@@ -1,0 +1,22 @@
+{
+  "name": "multistream-saas",
+  "version": "1.0.0",
+  "description": "Full-stack multistreaming SaaS platform similar to OneStream Live",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "dev:api": "npm run dev --workspace=apps/api",
+    "build": "npm run build --workspaces",
+    "db:generate": "npm run db:generate --workspace=packages/db",
+    "db:migrate": "npm run db:migrate --workspace=packages/db",
+    "db:push": "npm run db:push --workspace=packages/db"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
