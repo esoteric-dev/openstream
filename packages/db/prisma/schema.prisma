@@ -104,7 +104,7 @@ model ChatMessage {
 
 model Team {
   id        String   @id @default(cuid())
-  ownerId   String
+  ownerId   String   @unique
   name      String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -135,7 +135,7 @@ model HostedPage {
   slug         String   @unique
   title        String
   customDomain String?
-  streamId     String?
+  streamId     String?  @unique
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   

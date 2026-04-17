@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { createServer } from 'http';
+import path from 'path';
 import { Server } from 'socket.io';
 import { redisClient } from './services/redis.js';
 import authRoutes from './routes/auth.js';
@@ -14,7 +15,7 @@ import teamRoutes from './routes/team.js';
 import billingRoutes from './routes/billing.js';
 import { setupRTMPWebhook } from './services/rtmp-webhook.js';
 
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const app = express();
 const PORT = process.env.API_PORT || 3001;

@@ -8,13 +8,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
-    "dev:web": "npm run dev --workspace=apps/web",
-    "dev:api": "npm run dev --workspace=apps/api",
-    "build": "npm run build --workspaces",
-    "db:generate": "npm run db:generate --workspace=packages/db",
-    "db:migrate": "npm run db:migrate --workspace=packages/db",
-    "db:push": "npm run db:push --workspace=packages/db"
+    "dev": "concurrently \"bun run dev:api\" \"bun run dev:web\"",
+    "dev:web": "bun run --filter=./apps/web dev",
+    "dev:api": "bun run --filter=./apps/api dev",
+    "build": "bun run --filter='*' build",
+    "db:generate": "bun run --filter=./packages/db db:generate",
+    "db:migrate": "bun run --filter=./packages/db db:migrate",
+    "db:push": "bun run --filter=./packages/db db:push"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

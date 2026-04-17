@@ -4,10 +4,10 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:push": "prisma db push",
-    "db:studio": "prisma studio"
+    "db:generate": "node ./scripts/run-prisma-with-root-env.cjs generate",
+    "db:migrate": "node ./scripts/run-prisma-with-root-env.cjs migrate dev",
+    "db:push": "node ./scripts/run-prisma-with-root-env.cjs db push",
+    "db:studio": "node ./scripts/run-prisma-with-root-env.cjs studio"
   },
   "dependencies": {
     "@prisma/client": "^5.9.0",
