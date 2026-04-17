@@ -1,0 +1,162 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  password          String?
+  name              String?
+  plan              String    @default("free")
+  stripeCustomerId  String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  streams           Stream[]
+  platforms         Platform[]
+  team              Team?     @relation("TeamOwner")
+  teamMembers       TeamMember[]
+  hostedPages       HostedPage[]
+  subscription      Subscription?
+  
+  @@map("users")
+}
+
+model Stream {
+  id            String    @id @default(cuid())
+  userId        String
+  title         String
+  status        String    @default("offline") // offline, live, scheduled, ended
+  rtmpKey       String    @unique
+  destinations  Json      @default("[]") // Array of destination IDs
+  scheduledAt   DateTime?
+  recordingUrl  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  destination   Destination[]
+  chatMessages  ChatMessage[]
+  hostedPage    HostedPage?
+  
+  @@index([userId])
+  @@index([status])
+  @@map("streams")
+}
+
+model Destination {
+  id          String   @id @default(cuid())
+  streamId    String
+  platform    String   // youtube, facebook, twitch, linkedin, twitter, tiktok, custom
+  rtmpUrl     String
+  streamKey   String
+  status      String   @default("pending") // pending, connecting, live, error, disconnected
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  stream      Stream   @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  
+  @@index([streamId])
+  @@map("destinations")
+}
+
+model Platform {
+  id           String   @id @default(cuid())
+  userId       String
+  type         String   // youtube, facebook, twitch, linkedin, twitter, tiktok
+  accessToken  String
+  refreshToken String?
+  channelId    String?
+  channelName  String?
+  expiresAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, type])
+  @@index([userId])
+  @@map("platforms")
+}
+
+model ChatMessage {
+  id         String   @id @default(cuid())
+  streamId   String
+  platform   String
+  username   String
+  message    String
+  createdAt  DateTime @default(now())
+  
+  stream     Stream   @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  
+  @@index([streamId])
+  @@index([createdAt])
+  @@map("chat_messages")
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  ownerId   String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  owner     User         @relation("TeamOwner", fields: [ownerId], references: [id])
+  members   TeamMember[]
+  
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(cuid())
+  teamId    String
+  userId    String
+  role      String   @default("viewer") // admin, manager, viewer
+  createdAt DateTime @default(now())
+  
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([teamId, userId])
+  @@map("team_members")
+}
+
+model HostedPage {
+  id           String   @id @default(cuid())
+  userId       String
+  slug         String   @unique
+  title        String
+  customDomain String?
+  streamId     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stream       Stream?  @relation(fields: [streamId], references: [id])
+  
+  @@index([userId])
+  @@map("hosted_pages")
+}
+
+model Subscription {
+  id                  String    @id @default(cuid())
+  userId              String    @unique
+  plan                String    // free, pro, business, enterprise
+  status              String    @default("active") // active, canceled, past_due
+  stripeSubId         String?
+  currentPeriodEnd    DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("subscriptions")
+}
