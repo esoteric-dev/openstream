@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { spawnFFmpeg } from './ffmpeg.js';
+import { spawn } from 'child_process';
 import jwt from 'jsonwebtoken';
 import { prisma } from '@multistream/db';
 import { setStreamStatus } from './redis.js';
