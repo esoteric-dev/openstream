@@ -29,7 +29,8 @@ if (fs.existsSync(rootEnvPath)) {
   }
 }
 
-const result = spawnSync('prisma', commandArgs, {
+const prismaBin = path.resolve(__dirname, '../../../node_modules/.bin/prisma');
+const result = spawnSync(prismaBin, commandArgs, {
   stdio: 'inherit',
   shell: true,
   env: process.env,

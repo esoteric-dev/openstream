@@ -12,7 +12,7 @@
     "kill-ports": "bunx kill-port 4000 4001",
     "dev:web": "bun run --filter=./apps/web dev",
     "dev:api": "bun run --filter=./apps/api dev",
-    "build": "bun run --filter='*' build",
+    "build": "bun run db:generate && bun run --filter='*' build",
     "db:generate": "bun run --filter=./packages/db db:generate",
     "db:migrate": "bun run --filter=./packages/db db:migrate",
     "db:push": "bun run --filter=./packages/db db:push"
