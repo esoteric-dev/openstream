@@ -1,5 +1,6 @@
-import { spawn, ChildProcess } from 'child_process';
-import { Stream, Destination } from '@multistream/db';
+import { ChildProcess } from 'child_process';
+import { spawnFFmpeg } from '../services/ffmpeg.js';
+import { Stream, Destination, prisma } from '@multistream/db';
 import { setDestinationStatus } from '../services/redis.js';
 import { io } from '../index.js';
 
@@ -17,6 +18,8 @@ interface FFmpegWorker {
 }
 
 const activeWorkers = new Map<string, FFmpegWorker>();
+const retryCounters = new Map<string, number>();
+const MAX_DEST_RETRIES = 5;
 
 /**
  * Spawn FFmpeg process to restream to multiple destinations
@@ -24,22 +27,22 @@ const activeWorkers = new Map<string, FFmpegWorker>();
  */
 export async function spawnFFmpegWorker(stream: Stream & { destination: Destination[] }) {
   const rtmpInput = `rtmp://localhost:1935/live/${stream.rtmpKey}`;
-  
+
   console.log(`Spawning FFmpeg worker for stream ${stream.id} with ${stream.destination.length} destinations`);
-  
+
   // Build FFmpeg command with multiple outputs
   // -c copy avoids re-encoding for efficiency
   const args: string[] = [
     '-i', rtmpInput,
     '-c', 'copy',  // Copy codec without re-encoding
   ];
-  
+
   // Add output for each destination
   for (const dest of stream.destination) {
     if (dest.status === 'active') {
       const outputUrl = `${dest.rtmpUrl}/${dest.streamKey}`;
       args.push('-f', 'flv', outputUrl);
-      
+
       // Create worker entry
       const workerId = `${stream.id}-${dest.id}`;
       activeWorkers.set(workerId, {
@@ -50,7 +53,7 @@ export async function spawnFFmpegWorker(stream: Stream & { destination: Destinat
       });
     }
   }
-  
+
   // For better reliability, we spawn separate FFmpeg processes per destination
   // This way one failed destination doesn't affect others
   await Promise.all(
@@ -68,7 +71,7 @@ async function spawnSingleDestinationWorker(stream: Stream, destination: Destina
   const rtmpInput = `rtmp://localhost:1935/live/${stream.rtmpKey}`;
   const outputUrl = `${destination.rtmpUrl}/${destination.streamKey}`;
   const workerId = `${stream.id}-${destination.id}`;
-  
+
   // FFmpeg arguments for reliable streaming
   const args = [
     '-re',                    // Read input at native frame rate
@@ -83,9 +86,9 @@ async function spawnSingleDestinationWorker(stream: Stream, destination: Destina
     '-flvflags', 'no_duration_filesize',  // Required for RTMP
     outputUrl                  // Destination RTMP URL
   ];
-  
+
   console.log(`Starting FFmpeg for destination ${destination.id}: ${outputUrl}`);
-  
+
   // Update destination status
   await setDestinationStatus(stream.id, destination.id, 'connecting');
   io.to(`stream:${stream.id}`).emit('destination-status', {
@@ -93,22 +96,29 @@ async function spawnSingleDestinationWorker(stream: Stream, destination: Destina
     platform: destination.platform,
     status: 'connecting'
   });
-  
-  const ffmpeg = spawn('ffmpeg', args, {
+
+  const ffmpeg = spawnFFmpeg(args, {
     stdio: ['ignore', 'pipe', 'pipe']
   });
-  
+
   activeWorkers.set(workerId, {
     process: ffmpeg,
     streamId: stream.id,
     destinationId: destination.id,
     startedAt: new Date()
   });
-  
+
+  ffmpeg.on('error', (err: any) => {
+    console.error(`FFmpeg spawn error for destination ${destination.id}:`, err.message);
+    if (err.code === 'ENOENT') console.error('FFmpeg not found. Install it: winget install ffmpeg');
+    activeWorkers.delete(workerId);
+    handleDestinationError(stream.id, destination.id, err.message);
+  });
+
   // Handle FFmpeg output
   ffmpeg.stderr?.on('data', (data: Buffer) => {
     const output = data.toString();
-    
+
     // Parse FFmpeg output for connection status
     if (output.includes('Connection refused') || output.includes('error')) {
       handleDestinationError(stream.id, destination.id, output);
@@ -120,7 +130,7 @@ async function spawnSingleDestinationWorker(stream: Stream, destination: Destina
         status: 'live'
       });
     }
-    
+
     // Log bitrate and other stats
     if (output.includes('bitrate=')) {
       const match = output.match(/bitrate=\s*([\d.]+)kbits\/s/);
@@ -129,47 +139,87 @@ async function spawnSingleDestinationWorker(stream: Stream, destination: Destina
       }
     }
   });
-  
+
   ffmpeg.on('close', (code) => {
     console.log(`FFmpeg process for ${workerId} exited with code ${code}`);
     activeWorkers.delete(workerId);
-    
+
     if (code !== 0 && code !== null) {
       handleDestinationError(stream.id, destination.id, `Process exited with code ${code}`);
     }
   });
-  
+
   ffmpeg.on('error', (err) => {
     console.error(`FFmpeg error for ${workerId}:`, err);
     handleDestinationError(stream.id, destination.id, err.message);
   });
-  
+
   return workerId;
 }
 
 /**
  * Handle destination connection error
- * Implements exponential backoff for reconnection
+ * Implements exponential backoff reconnection with actual re-spawn
  */
 async function handleDestinationError(streamId: string, destinationId: string, error: string) {
-  console.error(`Destination ${destinationId} error:`, error);
-  
+  const retryKey = `${streamId}-${destinationId}`;
+  const currentRetries = retryCounters.get(retryKey) ?? 0;
+
+  console.error(`Destination ${destinationId} error (retry ${currentRetries}/${MAX_DEST_RETRIES}):`, error);
+
   await setDestinationStatus(streamId, destinationId, 'error', error);
   io.to(`stream:${streamId}`).emit('destination-status', {
     destinationId,
     status: 'error',
     error
   });
-  
-  // Attempt reconnection after delay
-  setTimeout(async () => {
-    console.log(`Attempting reconnection for destination ${destinationId}`);
-    await setDestinationStatus(streamId, destinationId, 'connecting');
+
+  if (currentRetries >= MAX_DEST_RETRIES) {
+    console.error(`Destination ${destinationId}: max retries exceeded, giving up`);
+    await setDestinationStatus(streamId, destinationId, 'disconnected', 'Max retries exceeded');
     io.to(`stream:${streamId}`).emit('destination-status', {
       destinationId,
-      status: 'connecting'
+      status: 'disconnected'
     });
-  }, 5000);
+    retryCounters.delete(retryKey);
+    return;
+  }
+
+  retryCounters.set(retryKey, currentRetries + 1);
+  const delay = Math.min(5000 * Math.pow(2, currentRetries), 60000);
+
+  // Attempt actual reconnection after delay
+  setTimeout(async () => {
+    try {
+      const stream = await prisma.stream.findUnique({
+        where: { id: streamId },
+        include: { destination: true }
+      });
+
+      if (!stream || stream.status !== 'live') {
+        retryCounters.delete(retryKey);
+        return;
+      }
+
+      const dest = stream.destination.find(d => d.id === destinationId);
+      if (!dest) {
+        retryCounters.delete(retryKey);
+        return;
+      }
+
+      console.log(`Reconnecting destination ${destinationId} (retry ${currentRetries + 1})`);
+      await setDestinationStatus(streamId, destinationId, 'connecting');
+      io.to(`stream:${streamId}`).emit('destination-status', {
+        destinationId,
+        status: 'connecting'
+      });
+
+      await spawnSingleDestinationWorker(stream, dest);
+    } catch (err) {
+      console.error(`Reconnection attempt failed for ${destinationId}:`, err);
+      handleDestinationError(streamId, destinationId, `Reconnection failed: ${err}`);
+    }
+  }, delay);
 }
 
 /**
@@ -178,20 +228,20 @@ async function handleDestinationError(streamId: string, destinationId: string, e
 export async function stopFFmpegWorkers(streamId: string) {
   const workersToStop = Array.from(activeWorkers.entries())
     .filter(([_, worker]) => worker.streamId === streamId);
-  
+
   for (const [workerId, worker] of workersToStop) {
     console.log(`Stopping FFmpeg worker ${workerId}`);
-    
+
     // Send SIGTERM for graceful shutdown
     worker.process.kill('SIGTERM');
-    
+
     // Force kill after timeout
     setTimeout(() => {
       if (!worker.process.killed) {
         worker.process.kill('SIGKILL');
       }
     }, 5000);
-    
+
     activeWorkers.delete(workerId);
   }
 }

@@ -37,8 +37,10 @@ model Stream {
   status        String    @default("offline") // offline, live, scheduled, ended
   rtmpKey       String    @unique
   destinations  Json      @default("[]") // Array of destination IDs
-  scheduledAt   DateTime?
-  recordingUrl  String?
+  playlist      Json      @default("[]") // Array of {key, name, url} objects
+  scheduledAt     DateTime?
+  scheduledEndAt  DateTime? // Optional auto-stop time
+  recordingUrl    String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   
@@ -76,6 +78,8 @@ model Platform {
   refreshToken String?
   channelId    String?
   channelName  String?
+  pageId       String?   // Facebook Page ID (null = personal profile)
+  pageName     String?   // Facebook Page name
   expiresAt    DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

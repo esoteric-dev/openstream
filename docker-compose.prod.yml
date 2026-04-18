@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: multistream
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: multistream
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multistream"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
+    ports:
+      - "9000:9000"   # S3 API — browsers upload directly here
+      - "9001:9001"   # MinIO console
+    volumes:
+      - minio_data:/data
+
+  srs:
+    image: ossrs/srs:5
+    command: ./objs/srs -c /usr/local/srs/conf/rtc.conf
+    ports:
+      - "1935:1935"   # RTMP ingest
+      - "1985:1985"   # SRS HTTP API
+      - "8080:8080"   # HLS playback
+    volumes:
+      - ./docker/srs.prod.conf:/usr/local/srs/conf/rtc.conf
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "4001:4001"
+    environment:
+      NODE_ENV: production
+      API_PORT: "4001"
+      DATABASE_URL: postgresql://multistream:${DB_PASSWORD:-password}@postgres:5432/multistream
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      S3_BUCKET: ${S3_BUCKET:-openstream}
+      FFMPEG_USE_DOCKER: "false"
+      RTMP_SERVER_URL: rtmp://srs:1935/live
+      SRS_API_URL: http://srs:1985
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:4000}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4001}
+        NEXT_PUBLIC_SRS_HTTP_URL: ${NEXT_PUBLIC_SRS_HTTP_URL:-http://localhost:8080}
+        NEXT_PUBLIC_RTMP_SERVER: ${NEXT_PUBLIC_RTMP_SERVER:-rtmp://localhost:1935/live}
+    ports:
+      - "4000:4000"
+    environment:
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:4000}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-changeme}
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

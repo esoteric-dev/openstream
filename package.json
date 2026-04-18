@@ -8,7 +8,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"bun run dev:api\" \"bun run dev:web\"",
+    "dev": "bun run kill-ports && concurrently \"bun run dev:api\" \"bun run dev:web\"",
+    "kill-ports": "bunx kill-port 4000 4001",
     "dev:web": "bun run --filter=./apps/web dev",
     "dev:api": "bun run --filter=./apps/api dev",
     "build": "bun run --filter='*' build",

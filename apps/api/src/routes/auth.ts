@@ -185,4 +185,30 @@ router.post('/refresh', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * PUT /api/auth/profile
+ * Update display name
+ */
+router.put('/profile', async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No token provided' });
+
+  try {
+    const token = authHeader.split(' ')[1];
+    const { userId } = jwt.verify(token, JWT_SECRET) as { userId: string };
+    const { name } = z.object({ name: z.string().min(1).max(100) }).parse(req.body);
+
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { name },
+      select: { id: true, name: true, email: true, plan: true },
+    });
+
+    res.json(user);
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+    res.status(400).json({ error: 'Invalid request' });
+  }
+});
+
 export default router;

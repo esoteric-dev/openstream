@@ -1,129 +1,163 @@
 import express from 'express';
+import { spawnFFmpeg } from './ffmpeg.js';
+import path from 'path';
+import os from 'os';
 import { prisma } from '@multistream/db';
-import { setStreamStatus, setDestinationStatus } from './redis.js';
-import { spawnFFmpegWorker } from '../workers/ffmpeg-worker.js';
+import { setStreamStatus } from './redis.js';
+import { spawnFFmpegWorker, stopFFmpegWorkers } from '../workers/ffmpeg-worker.js';
 import { io } from '../index.js';
-
-/**
- * RTMP Webhook Handler for SRS (Simple Realtime Server)
- * SRS calls these endpoints when streams connect/disconnect
- * Reference: https://github.com/ossrs/srs/wiki/v4_EN_HTTPCallback
- */
+import { uploadRecording } from './recording.js';
+import { isStorageConfigured } from './s3.js';
 
 interface SRSWebhookPayload {
-  action: string; // on_connect, on_close, on_publish, on_unpublish, on_dvr
+  action: string;
   client_id: string;
   ip: string;
   vhost: string;
   app: string;
-  stream: string; // This is the RTMP key
+  stream: string; // RTMP key
   param: string;
 }
 
+// Track active recording processes: streamId → ChildProcess
+const recordingProcesses = new Map<string, import('child_process').ChildProcess>();
+
 export function setupRTMPWebhook(app: express.Application) {
-  /**
-   * Called when a publisher connects to RTMP server
-   * Validates stream key and updates stream status
-   */
+
+  // Called when a publisher starts streaming
   app.post('/api/webhooks/rtmp/on-publish', async (req, res) => {
     const payload: SRSWebhookPayload = req.body;
-    console.log('RTMP on-publish:', payload);
-    
+    console.log('RTMP on-publish:', payload.stream);
+
     try {
-      // Find stream by RTMP key
       const stream = await prisma.stream.findUnique({
         where: { rtmpKey: payload.stream },
         include: { destination: true }
       });
-      
+
       if (!stream) {
-        console.error('Stream not found for key:', payload.stream);
-        res.json({ code: 1 }); // Reject connection
-        return;
+        console.error('Unknown RTMP key:', payload.stream);
+        return res.json({ code: 1 }); // Reject
       }
-      
-      // Update stream status to live
+
       await prisma.stream.update({
         where: { id: stream.id },
         data: { status: 'live' }
       });
-      
-      // Set Redis status
+
       await setStreamStatus(stream.id, 'live', {
         startedAt: new Date().toISOString(),
         clientId: payload.client_id
       });
-      
-      // Spawn FFmpeg worker to multistream to all destinations
-      if (stream.destination.length > 0) {
-        await spawnFFmpegWorker(stream);
+
+      // Fan out to all active destinations
+      const activeDestinations = stream.destination.filter(d => d.status !== 'disconnected');
+      if (activeDestinations.length > 0) {
+        await spawnFFmpegWorker({ ...stream, destination: activeDestinations });
       }
-      
-      // Notify connected clients via WebSocket
+
+      // Start recording if any storage backend is configured (MinIO or AWS)
+      if (isStorageConfigured()) {
+        startRecording(stream.id, stream.rtmpKey);
+      }
+
       io.to(`stream:${stream.id}`).emit('stream-status', {
         status: 'live',
         startedAt: new Date().toISOString()
       });
-      
-      res.json({ code: 0 }); // Accept connection
+
+      res.json({ code: 0 }); // Accept
     } catch (error) {
-      console.error('Error in on-publish webhook:', error);
+      console.error('on-publish error:', error);
       res.json({ code: 1 });
     }
   });
-  
-  /**
-   * Called when a publisher disconnects
-   * Cleans up FFmpeg workers and updates status
-   */
+
+  // Called when a publisher stops streaming
   app.post('/api/webhooks/rtmp/on-unpublish', async (req, res) => {
     const payload: SRSWebhookPayload = req.body;
-    console.log('RTMP on-unpublish:', payload);
-    
+    console.log('RTMP on-unpublish:', payload.stream);
+
     try {
       const stream = await prisma.stream.findUnique({
         where: { rtmpKey: payload.stream }
       });
-      
+
       if (stream) {
-        // Update stream status
+        // Stop all FFmpeg relay workers
+        await stopFFmpegWorkers(stream.id);
+
+        // Stop recording process and upload to S3
+        await stopRecording(stream.id);
+
         await prisma.stream.update({
           where: { id: stream.id },
           data: { status: 'ended' }
         });
-        
-        // Update Redis
+
         await setStreamStatus(stream.id, 'ended', {
           endedAt: new Date().toISOString()
         });
-        
-        // Notify clients
+
         io.to(`stream:${stream.id}`).emit('stream-status', {
           status: 'ended',
           endedAt: new Date().toISOString()
         });
       }
-      
+
       res.json({ code: 0 });
     } catch (error) {
-      console.error('Error in on-unpublish webhook:', error);
-      res.json({ code: 0 }); // Still return success to avoid SRS retries
+      console.error('on-unpublish error:', error);
+      res.json({ code: 0 }); // Always accept to prevent SRS retries
     }
   });
-  
-  /**
-   * Called when a client connects (for playback)
-   */
-  app.post('/api/webhooks/rtmp/on-connect', async (req, res) => {
-    res.json({ code: 0 });
-  });
-  
-  /**
-   * Called when a client disconnects
-   */
-  app.post('/api/webhooks/rtmp/on-close', async (req, res) => {
-    res.json({ code: 0 });
-  });
-  
+
+  app.post('/api/webhooks/rtmp/on-connect', (_req, res) => res.json({ code: 0 }));
+  app.post('/api/webhooks/rtmp/on-close', (_req, res) => res.json({ code: 0 }));
+
   console.log('RTMP webhook handlers registered');
+}
+
+function startRecording(streamId: string, rtmpKey: string) {
+  const outputPath = path.join(os.tmpdir(), `recording-${streamId}.mp4`);
+  const rtmpInput = `rtmp://localhost:1935/live/${rtmpKey}`;
+
+  console.log(`Starting recording for stream ${streamId}`);
+
+  const ffmpeg = spawnFFmpeg([
+    '-i', rtmpInput,
+    '-c', 'copy',
+    '-y',
+    outputPath
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  ffmpeg.on('error', (err) => console.error(`Recording error for ${streamId}:`, err.message));
+  recordingProcesses.set(streamId, ffmpeg);
+}
+
+async function stopRecording(streamId: string) {
+  const proc = recordingProcesses.get(streamId);
+  if (!proc) return;
+
+  recordingProcesses.delete(streamId);
+
+  await new Promise<void>(resolve => {
+    proc.kill('SIGTERM');
+    proc.on('close', () => resolve());
+    setTimeout(() => { proc.kill('SIGKILL'); resolve(); }, 5000);
+  });
+
+  const outputPath = path.join(os.tmpdir(), `recording-${streamId}.mp4`);
+  try {
+    const s3Url = await uploadRecording(streamId, outputPath);
+    if (s3Url) {
+      await prisma.stream.update({
+        where: { id: streamId },
+        data: { recordingUrl: s3Url }
+      });
+      console.log(`Recording uploaded for stream ${streamId}: ${s3Url}`);
+    }
+  } catch (err) {
+    console.error(`Failed to upload recording for ${streamId}:`, err);
+  }
 }

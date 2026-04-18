@@ -30,4 +30,50 @@ router.get('/', async (req: Request, res: Response) => {
   } catch (error) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
+// POST /api/recordings/:id/add-to-stream - Add a recording to another stream's playlist
+router.post('/:id/add-to-stream', async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).userId;
+    const { id } = req.params;
+    const { targetStreamId } = req.body;
+
+    if (!targetStreamId) return res.status(400).json({ error: 'targetStreamId is required' });
+
+    // Find the source stream (which has the recording)
+    const sourceStream = await prisma.stream.findFirst({
+      where: { id, userId, recordingUrl: { not: null } },
+    });
+    if (!sourceStream || !sourceStream.recordingUrl) {
+      return res.status(404).json({ error: 'Recording not found' });
+    }
+
+    // Find the target stream
+    const targetStream = await prisma.stream.findFirst({
+      where: { id: targetStreamId, userId },
+    });
+    if (!targetStream) {
+      return res.status(404).json({ error: 'Target stream not found' });
+    }
+
+    // Append to target stream's playlist
+    const currentPlaylist = (targetStream.playlist as any[]) ?? [];
+    const newItem = {
+      key: `rec_${sourceStream.id}_${Date.now()}`,
+      name: `Recording: ${sourceStream.title}`,
+      url: sourceStream.recordingUrl,
+    };
+    const updatedPlaylist = [...currentPlaylist, newItem];
+
+    const updated = await prisma.stream.update({
+      where: { id: targetStreamId },
+      data: { playlist: updatedPlaylist },
+    });
+
+    res.json({ playlist: updated.playlist, addedItem: newItem });
+  } catch (error) {
+    console.error('Add recording to stream error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;
