@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "./node_modules/.bin/next dev -p 4000",
-    "build": "./node_modules/.bin/next build",
-    "start": "./node_modules/.bin/next start -p 4000"
+    "dev": "../../node_modules/.bin/next dev -p 4000",
+    "build": "../../node_modules/.bin/next build",
+    "start": "../../node_modules/.bin/next start -p 4000"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
